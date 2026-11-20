@@ -34,7 +34,10 @@ $("#page").innerHTML = `
         <button class="chip on" data-side="front">Front</button>
         <button class="chip" data-side="back">Back</button>
       </div>
-      <canvas id="canvas" width="800" height="1000" aria-label="T-shirt preview"></canvas>
+      <div class="tilt" id="tilt"><div class="tilt-card">
+        <canvas id="canvas" width="800" height="1000" aria-label="T-shirt preview"></canvas>
+        <div class="tilt-shine" aria-hidden="true"></div>
+      </div></div>
       <div class="stage-tools" id="tools">
         <label for="scale">Artwork size</label>
         <input type="range" id="scale" min="20" max="100" value="80">
@@ -230,21 +233,59 @@ $("#remove").addEventListener("click", () => {
   draw();
 });
 
+// --- tilt (CSS 3D) -------------------------------------------------------------
+// The card tilts toward the pointer with a moving shine. It flattens while artwork
+// is being dragged so the drag maps 1:1 onto the canvas.
+const tilt = $("#tilt");
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let tilting = null; // pointerId of a touch/pen tilting the tee
+function setTilt(e) {
+  if (reduceMotion) return;
+  const r = tilt.getBoundingClientRect(); // untransformed wrapper
+  const nx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const ny = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  tilt.style.setProperty("--ry", `${((nx - 0.5) * 24).toFixed(2)}deg`);
+  tilt.style.setProperty("--rx", `${((0.5 - ny) * 16).toFixed(2)}deg`);
+  tilt.style.setProperty("--sx", `${(nx * 100).toFixed(1)}%`);
+  tilt.style.setProperty("--sy", `${(ny * 100).toFixed(1)}%`);
+  tilt.classList.add("live");
+}
+function resetTilt() {
+  tilt.classList.remove("live");
+  ["--rx", "--ry"].forEach((v) => tilt.style.setProperty(v, "0deg"));
+}
+tilt.addEventListener("pointermove", (e) => {
+  if (drag) return;
+  if (e.pointerType === "mouse" || tilting === e.pointerId) setTilt(e);
+});
+tilt.addEventListener("pointerleave", (e) => {
+  if (e.pointerType === "mouse" && !drag) resetTilt();
+});
+
 let drag = null;
 const toCanvas = (e) => {
-  const r = canvas.getBoundingClientRect();
-  return { x: ((e.clientX - r.left) * canvas.width) / r.width, y: ((e.clientY - r.top) * canvas.height) / r.height };
+  // Use layout boxes (unaffected by the 3D transform) so tilt never skews the drag.
+  const r = tilt.getBoundingClientRect();
+  const left = r.left + canvas.offsetLeft, top = r.top + canvas.offsetTop;
+  return { x: ((e.clientX - left) * canvas.width) / canvas.offsetWidth, y: ((e.clientY - top) * canvas.height) / canvas.offsetHeight };
 };
+function startTilt(e) {
+  if (e.pointerType === "mouse") return;
+  tilting = e.pointerId;
+  canvas.setPointerCapture(e.pointerId);
+  setTilt(e);
+}
 canvas.addEventListener("pointerdown", (e) => {
   const art = state.art[state.side];
-  if (!art) return;
+  if (!art) return startTilt(e);
   const p = toCanvas(e);
   const r = artRect(art, canvas.width, canvas.height);
   const pa = printRect(canvas.width, canvas.height);
   const inside = (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) ||
     (p.x >= pa.x && p.x <= pa.x + pa.w && p.y >= pa.y && p.y <= pa.y + pa.h);
-  if (!inside) return;
+  if (!inside) return startTilt(e);
   drag = { start: p, cx: art.cx, cy: art.cy };
+  resetTilt();
   canvas.setPointerCapture(e.pointerId);
   canvas.classList.add("dragging");
 });
@@ -257,9 +298,13 @@ canvas.addEventListener("pointermove", (e) => {
   art.cy = Math.min(1, Math.max(0, drag.cy + (p.y - drag.start.y) / pa.h));
   draw();
 });
-const endDrag = () => {
+const endDrag = (e) => {
   drag = null;
   canvas.classList.remove("dragging");
+  if (tilting === e.pointerId) {
+    tilting = null;
+    resetTilt();
+  }
 };
 canvas.addEventListener("pointerup", endDrag);
 canvas.addEventListener("pointercancel", endDrag);
